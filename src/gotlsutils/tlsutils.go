@@ -16,7 +16,9 @@ var actualCipherSuites []uint16
 func GetActualCipherSuites(certAndCaPath, keyPath string) ([]uint16, error) {
 	actualCipherSuites = make([]uint16, 0)
 	port, err := ephemeralPort()
-	return nil, err
+	if err != nil {
+		return nil, err
+	}
 	l := startDummyServer(port, certAndCaPath, keyPath)
 	defer l.Close()
 	client := &http.Client{
@@ -27,8 +29,9 @@ func GetActualCipherSuites(certAndCaPath, keyPath string) ([]uint16, error) {
 		},
 	}
 	_, err = client.Get(fmt.Sprintf("https://localhost:%d/dummy", port))
-	return nil, err
-
+	if err != nil {
+		return nil, err
+	}
 	return actualCipherSuites, nil
 }
 
