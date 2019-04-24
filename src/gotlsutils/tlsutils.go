@@ -9,17 +9,23 @@ import (
 	"time"
 )
 
-var actualCipherSuites []uint16
+
 
 // GetActualCipherSuites - starts a dummy server and uses ClientHelloInfo to return the actual supported ciphers
 // Can be used to remove vulnerable ciphers, such as 49170 (TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA) and 10 (TLS_RSA_WITH_3DES_EDE_CBC_SHA)
 func GetActualCipherSuites(certAndCaPath, keyPath string) ([]uint16, error) {
-	actualCipherSuites = make([]uint16, 0)
+	actualCipherSuites := make([]uint16, 0)
+
+	cipherChan := make(chan uint16, 0)
+	doneChan := make(chan bool, 1)
+	// 49170 - TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA
+	// 10 - TLS_RSA_WITH_3DES_EDE_CBC_SHA
+	vulnerableCipherSuites := []uint16{49170, 10}
 	port, err := ephemeralPort()
 	if err != nil {
 		return nil, err
 	}
-	l := startDummyServer(port, certAndCaPath, keyPath)
+	l := startDummyServer(port, certAndCaPath, keyPath, cipherChan, doneChan)
 	defer l.Close()
 	client := &http.Client{
 		Transport: &http.Transport{
@@ -28,24 +34,46 @@ func GetActualCipherSuites(certAndCaPath, keyPath string) ([]uint16, error) {
 			},
 		},
 	}
-	_, err = client.Get(fmt.Sprintf("https://localhost:%d/dummy", port))
-	if err != nil {
-		return nil, err
+	go client.Get(fmt.Sprintf("https://localhost:%d/dummy", port))
+
+	loop:
+	for {
+		select {
+		case v := <-cipherChan:
+				if !contains(vulnerableCipherSuites, v) {
+					actualCipherSuites = append(actualCipherSuites, v)
+				}
+		case <-doneChan:
+			break loop
+		}
 	}
+
 	return actualCipherSuites, nil
 }
 
-func getCiphers(helloInfo *tls.ClientHelloInfo) (*tls.Certificate, error) {
-	for _, suite := range helloInfo.CipherSuites {
-		actualCipherSuites = append(actualCipherSuites, suite)
+func getCiphersChannel(ciphers chan uint16, doneChan chan bool) func(helloInfo *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	return func(helloInfo *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		for _, suite := range helloInfo.CipherSuites {
+				ciphers <- suite
+		}
+		doneChan <- true
+		return nil, nil
 	}
-	return nil, nil
 }
 
 // UTILS
-func startDummyServer(port int, certAndCaPath, keyPath string) *http.Server {
+func contains(s []uint16, e uint16) bool {
+	for _, a := range s {
+		if a == e {
+			return true
+		}
+	}
+	return false
+}
+
+func startDummyServer(port int, certAndCaPath, keyPath string, ciphers chan uint16, doneChan chan bool) *http.Server {
 	serverTlsConfig := &tls.Config{
-		GetCertificate: getCiphers,
+		GetCertificate: getCiphersChannel(ciphers, doneChan),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dummy/",
